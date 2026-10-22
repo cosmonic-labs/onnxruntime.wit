@@ -1,0 +1,5 @@
+package example:squeezenet;
+
+world squeezenet {
+    import onnxruntime:onnxruntime/inference-session@0.1.0;
+}
