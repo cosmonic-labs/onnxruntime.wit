@@ -1,0 +1,5 @@
+package example:sd-turbo;
+
+world sd-turbo {
+    import onnxruntime:onnxruntime/inference-session@0.1.0;
+}

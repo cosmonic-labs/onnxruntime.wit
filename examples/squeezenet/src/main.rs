@@ -3,8 +3,9 @@
 //! Usage: squeezenet [path to squeezenet model.onnx] [execution provider, e.g. webgpu or cpu]
 
 wit_bindgen::generate!({
-    world: "squeezenet",
-    path: "wit",
+    world: "example:squeezenet/squeezenet",
+    // The onnxruntime:onnxruntime package comes from the repository's top-level wit directory.
+    path: ["../../wit", "wit"],
     generate_all,
 });
 
