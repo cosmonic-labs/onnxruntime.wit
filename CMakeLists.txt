@@ -73,7 +73,7 @@ target_include_directories(onnxruntime PRIVATE "${ort_source_dir}/include/onnxru
 target_compile_options(onnxruntime PRIVATE -fwasm-exceptions "SHELL:-mllvm -wasm-use-legacy-eh=false")
 target_link_options(onnxruntime PRIVATE
   -mexec-model=reactor
-  -fwasm-exceptions "SHELL:-mllvm -wasm-use-legacy-eh=false"
+  -fwasm-exceptions
   # MLAS needs more than wasm-ld's default 64 KiB stack.
   -Wl,-z,stack-size=5242880
 )
