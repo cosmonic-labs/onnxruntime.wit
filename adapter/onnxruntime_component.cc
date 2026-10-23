@@ -56,49 +56,48 @@ onnxruntime_string_t ToWitString(const std::string& s) {
   return ret;
 }
 
-// Constructors can't return errors in WIT, so invalid arguments trap.
-[[noreturn]] void Trap(const std::string& message) {
-  std::fprintf(stderr, "onnxruntime: %s\n", message.c_str());
-  std::abort();
-}
-
 void SetError(Error* err, OrtErrorCode code, const std::string& message) {
+  err->code = {};
   switch (code) {
     case ORT_INVALID_ARGUMENT:
-      err->code = EXPORTS_ONNXRUNTIME_ONNXRUNTIME_TYPES_ERROR_CODE_INVALID_ARGUMENT;
+      err->code.tag = EXPORTS_ONNXRUNTIME_ONNXRUNTIME_TYPES_ERROR_CODE_INVALID_ARGUMENT;
       break;
     case ORT_NO_SUCHFILE:
-      err->code = EXPORTS_ONNXRUNTIME_ONNXRUNTIME_TYPES_ERROR_CODE_NO_SUCH_FILE;
+      err->code.tag = EXPORTS_ONNXRUNTIME_ONNXRUNTIME_TYPES_ERROR_CODE_NO_SUCH_FILE;
       break;
     case ORT_NO_MODEL:
-      err->code = EXPORTS_ONNXRUNTIME_ONNXRUNTIME_TYPES_ERROR_CODE_NO_MODEL;
+      err->code.tag = EXPORTS_ONNXRUNTIME_ONNXRUNTIME_TYPES_ERROR_CODE_NO_MODEL;
       break;
     case ORT_ENGINE_ERROR:
-      err->code = EXPORTS_ONNXRUNTIME_ONNXRUNTIME_TYPES_ERROR_CODE_ENGINE_ERROR;
+      err->code.tag = EXPORTS_ONNXRUNTIME_ONNXRUNTIME_TYPES_ERROR_CODE_ENGINE_ERROR;
       break;
     case ORT_RUNTIME_EXCEPTION:
-      err->code = EXPORTS_ONNXRUNTIME_ONNXRUNTIME_TYPES_ERROR_CODE_RUNTIME_EXCEPTION;
+      err->code.tag = EXPORTS_ONNXRUNTIME_ONNXRUNTIME_TYPES_ERROR_CODE_RUNTIME_EXCEPTION;
       break;
     case ORT_INVALID_PROTOBUF:
-      err->code = EXPORTS_ONNXRUNTIME_ONNXRUNTIME_TYPES_ERROR_CODE_INVALID_PROTOBUF;
+      err->code.tag = EXPORTS_ONNXRUNTIME_ONNXRUNTIME_TYPES_ERROR_CODE_INVALID_PROTOBUF;
       break;
     case ORT_MODEL_LOADED:
-      err->code = EXPORTS_ONNXRUNTIME_ONNXRUNTIME_TYPES_ERROR_CODE_MODEL_LOADED;
+      err->code.tag = EXPORTS_ONNXRUNTIME_ONNXRUNTIME_TYPES_ERROR_CODE_MODEL_LOADED;
       break;
     case ORT_NOT_IMPLEMENTED:
-      err->code = EXPORTS_ONNXRUNTIME_ONNXRUNTIME_TYPES_ERROR_CODE_NOT_IMPLEMENTED;
+      err->code.tag = EXPORTS_ONNXRUNTIME_ONNXRUNTIME_TYPES_ERROR_CODE_NOT_IMPLEMENTED;
       break;
     case ORT_INVALID_GRAPH:
-      err->code = EXPORTS_ONNXRUNTIME_ONNXRUNTIME_TYPES_ERROR_CODE_INVALID_GRAPH;
+      err->code.tag = EXPORTS_ONNXRUNTIME_ONNXRUNTIME_TYPES_ERROR_CODE_INVALID_GRAPH;
       break;
     case ORT_EP_FAIL:
-      err->code = EXPORTS_ONNXRUNTIME_ONNXRUNTIME_TYPES_ERROR_CODE_EP_FAIL;
+      err->code.tag = EXPORTS_ONNXRUNTIME_ONNXRUNTIME_TYPES_ERROR_CODE_EP_FAIL;
       break;
     default:
-      err->code = EXPORTS_ONNXRUNTIME_ONNXRUNTIME_TYPES_ERROR_CODE_FAIL;
+      err->code.tag = EXPORTS_ONNXRUNTIME_ONNXRUNTIME_TYPES_ERROR_CODE_FAIL;
       break;
   }
   err->message = ToWitString(message);
+}
+
+[[noreturn]] void ThrowInvalidArgument(const std::string& message) {
+  throw Ort::Exception(std::string(message), ORT_INVALID_ARGUMENT);
 }
 
 // Runs `fn`, converting exceptions into a WIT error. Returns false on error.
@@ -116,7 +115,7 @@ bool Try(Error* err, Fn&& fn) {
 }
 
 struct ElementTypeInfo {
-  ElementType wit;
+  uint8_t wit;  // the tensor-element-type case
   ONNXTensorElementDataType ort;
   size_t size;  // 0 for strings
 };
@@ -138,9 +137,9 @@ constexpr ElementTypeInfo kElementTypes[] = {
     {EXPORTS_ONNXRUNTIME_ONNXRUNTIME_TYPES_TENSOR_ELEMENT_TYPE_STRING, ONNX_TENSOR_ELEMENT_DATA_TYPE_STRING, 0},
 };
 
-const ElementTypeInfo* FindElementType(ElementType wit) {
+const ElementTypeInfo* FindElementType(const ElementType& wit) {
   for (const auto& info : kElementTypes) {
-    if (info.wit == wit) return &info;
+    if (info.wit == wit.tag) return &info;
   }
   return nullptr;
 }
@@ -150,6 +149,16 @@ const ElementTypeInfo* FindElementType(ONNXTensorElementDataType ort) {
     if (info.ort == ort) return &info;
   }
   return nullptr;
+}
+
+ElementType ToWitElementType(ONNXTensorElementDataType ort) {
+  ElementType wit{};
+  if (const auto* type = FindElementType(ort)) {
+    wit.tag = type->wit;
+  } else {
+    wit.tag = EXPORTS_ONNXRUNTIME_ONNXRUNTIME_TYPES_TENSOR_ELEMENT_TYPE_OTHER;
+  }
+  return wit;
 }
 
 exports_onnxruntime_onnxruntime_types_own_tensor_t NewTensor(Ort::Value value) {
@@ -187,9 +196,14 @@ Ort::SessionOptions ToOrtSessionOptions(const SessionOptions* options) {
   }
 
   if (options->graph_optimization_level.is_some) {
+    // Indexed by the graph-optimization-level case.
     static constexpr GraphOptimizationLevel kLevels[] = {ORT_DISABLE_ALL, ORT_ENABLE_BASIC, ORT_ENABLE_EXTENDED,
                                                          ORT_ENABLE_LAYOUT, ORT_ENABLE_ALL};
-    so.SetGraphOptimizationLevel(kLevels[options->graph_optimization_level.val]);
+    const uint8_t level = options->graph_optimization_level.val.tag;
+    if (level == EXPORTS_ONNXRUNTIME_ONNXRUNTIME_INFERENCE_SESSION_GRAPH_OPTIMIZATION_LEVEL_OTHER) {
+      ThrowInvalidArgument("unsupported graph optimization level");
+    }
+    so.SetGraphOptimizationLevel(kLevels[level]);
   }
   if (options->execution_mode.is_some) {
     so.SetExecutionMode(options->execution_mode.val == EXPORTS_ONNXRUNTIME_ONNXRUNTIME_INFERENCE_SESSION_EXECUTION_MODE_PARALLEL
@@ -272,8 +286,8 @@ exports_onnxruntime_onnxruntime_types_value_metadata_t ToValueMetadata(const std
   if (type_info.GetONNXType() != ONNX_TYPE_TENSOR) return metadata;
 
   auto tensor_info = type_info.GetTensorTypeAndShapeInfo();
-  if (const auto* type = FindElementType(tensor_info.GetElementType())) {
-    metadata.element_type = {true, type->wit};
+  if (FindElementType(tensor_info.GetElementType())) {
+    metadata.element_type = {true, ToWitElementType(tensor_info.GetElementType())};
   }
   const auto shape = tensor_info.GetShape();
   std::vector<const char*> symbolic(shape.size());
@@ -324,83 +338,92 @@ extern "C" {
 // onnxruntime:onnxruntime/types
 //
 
-exports_onnxruntime_onnxruntime_types_own_tensor_t exports_onnxruntime_onnxruntime_types_constructor_tensor(
-    ElementType element_type, onnxruntime_list_s64_t* dims, onnxruntime_list_u8_t* data) {
-  const auto* type = FindElementType(element_type);
-  if (!type || type->size == 0) Trap("use tensor.from-strings to create string tensors");
+bool exports_onnxruntime_onnxruntime_types_static_tensor_from_data(ElementType* element_type,
+                                                                   onnxruntime_list_s64_t* dims,
+                                                                   onnxruntime_list_u8_t* data,
+                                                                   exports_onnxruntime_onnxruntime_types_own_tensor_t* ret,
+                                                                   Error* err) {
+  const bool ok = Try(err, [&]() {
+    const auto* type = FindElementType(*element_type);
+    if (!type || type->size == 0) ThrowInvalidArgument("use tensor.from-strings to create string tensors");
 
-  const std::vector<int64_t> shape(dims->ptr, dims->ptr + dims->len);
+    const std::vector<int64_t> shape(dims->ptr, dims->ptr + dims->len);
+    size_t count = 1;
+    for (int64_t dim : shape) {
+      if (dim < 0) ThrowInvalidArgument("tensor dimensions must not be negative");
+      count *= static_cast<size_t>(dim);
+    }
+    if (data->len != count * type->size) {
+      ThrowInvalidArgument("tensor data has " + std::to_string(data->len) + " bytes, but its shape needs " +
+                           std::to_string(count * type->size));
+    }
+
+    Ort::AllocatorWithDefaultOptions allocator;
+    auto value = Ort::Value::CreateTensor(allocator, shape.data(), shape.size(), type->ort);
+    std::memcpy(value.GetTensorMutableRawData(), data->ptr, data->len);
+    *ret = NewTensor(std::move(value));
+  });
+  exports_onnxruntime_onnxruntime_types_tensor_element_type_free(element_type);
   onnxruntime_list_s64_free(dims);
-  size_t count = 1;
-  for (int64_t dim : shape) {
-    if (dim < 0) Trap("tensor dimensions must not be negative");
-    count *= static_cast<size_t>(dim);
-  }
-  if (data->len != count * type->size) {
-    Trap("tensor data has " + std::to_string(data->len) + " bytes, but its shape needs " +
-         std::to_string(count * type->size));
-  }
-
-  Ort::AllocatorWithDefaultOptions allocator;
-  auto value = Ort::Value::CreateTensor(allocator, shape.data(), shape.size(), type->ort);
-  std::memcpy(value.GetTensorMutableRawData(), data->ptr, data->len);
   onnxruntime_list_u8_free(data);
-  return NewTensor(std::move(value));
+  return ok;
 }
 
-exports_onnxruntime_onnxruntime_types_own_tensor_t exports_onnxruntime_onnxruntime_types_static_tensor_from_strings(
-    onnxruntime_list_s64_t* dims, onnxruntime_list_string_t* data) {
-  const std::vector<int64_t> shape(dims->ptr, dims->ptr + dims->len);
+bool exports_onnxruntime_onnxruntime_types_static_tensor_from_strings(
+    onnxruntime_list_s64_t* dims, onnxruntime_list_string_t* data,
+    exports_onnxruntime_onnxruntime_types_own_tensor_t* ret, Error* err) {
+  const bool ok = Try(err, [&]() {
+    const std::vector<int64_t> shape(dims->ptr, dims->ptr + dims->len);
+
+    std::vector<std::string> strings;
+    strings.reserve(data->len);
+    for (size_t i = 0; i < data->len; ++i) strings.push_back(ToString(data->ptr[i]));
+    std::vector<const char*> c_strings;
+    c_strings.reserve(strings.size());
+    for (const auto& s : strings) c_strings.push_back(s.c_str());
+
+    Ort::AllocatorWithDefaultOptions allocator;
+    auto value = Ort::Value::CreateTensor(allocator, shape.data(), shape.size(), ONNX_TENSOR_ELEMENT_DATA_TYPE_STRING);
+    if (value.GetTensorTypeAndShapeInfo().GetElementCount() != c_strings.size()) {
+      ThrowInvalidArgument("string tensor has " + std::to_string(c_strings.size()) + " elements, but its shape needs " +
+                           std::to_string(value.GetTensorTypeAndShapeInfo().GetElementCount()));
+    }
+    value.FillStringTensor(c_strings.data(), c_strings.size());
+    *ret = NewTensor(std::move(value));
+  });
   onnxruntime_list_s64_free(dims);
-
-  std::vector<std::string> strings;
-  strings.reserve(data->len);
-  for (size_t i = 0; i < data->len; ++i) strings.push_back(ToString(data->ptr[i]));
   onnxruntime_list_string_free(data);
-  std::vector<const char*> c_strings;
-  c_strings.reserve(strings.size());
-  for (const auto& s : strings) c_strings.push_back(s.c_str());
-
-  Ort::AllocatorWithDefaultOptions allocator;
-  auto value = Ort::Value::CreateTensor(allocator, shape.data(), shape.size(), ONNX_TENSOR_ELEMENT_DATA_TYPE_STRING);
-  if (value.GetTensorTypeAndShapeInfo().GetElementCount() != c_strings.size()) {
-    Trap("string tensor has " + std::to_string(c_strings.size()) + " elements, but its shape needs " +
-         std::to_string(value.GetTensorTypeAndShapeInfo().GetElementCount()));
-  }
-  value.FillStringTensor(c_strings.data(), c_strings.size());
-  return NewTensor(std::move(value));
+  return ok;
 }
 
-ElementType exports_onnxruntime_onnxruntime_types_method_tensor_element_type(
-    exports_onnxruntime_onnxruntime_types_borrow_tensor_t self) {
-  const auto* type = FindElementType(self->value.GetTensorTypeAndShapeInfo().GetElementType());
-  if (!type) Trap("tensor has an element type that the onnxruntime interface does not support");
-  return type->wit;
+void exports_onnxruntime_onnxruntime_types_method_tensor_get_element_type(
+    exports_onnxruntime_onnxruntime_types_borrow_tensor_t self, ElementType* ret) {
+  *ret = ToWitElementType(self->value.GetTensorTypeAndShapeInfo().GetElementType());
 }
 
-void exports_onnxruntime_onnxruntime_types_method_tensor_dims(exports_onnxruntime_onnxruntime_types_borrow_tensor_t self,
-                                                              onnxruntime_list_s64_t* ret) {
+void exports_onnxruntime_onnxruntime_types_method_tensor_get_dims(
+    exports_onnxruntime_onnxruntime_types_borrow_tensor_t self, onnxruntime_list_s64_t* ret) {
   const auto shape = self->value.GetTensorTypeAndShapeInfo().GetShape();
   ret->len = shape.size();
   ret->ptr = static_cast<int64_t*>(std::malloc(shape.size() * sizeof(int64_t)));
   std::memcpy(ret->ptr, shape.data(), shape.size() * sizeof(int64_t));
 }
 
-exports_onnxruntime_onnxruntime_types_device_type_t exports_onnxruntime_onnxruntime_types_method_tensor_location(
-    exports_onnxruntime_onnxruntime_types_borrow_tensor_t self) {
-  return self->value.GetTensorMemoryInfo().GetDeviceType() == OrtMemoryInfoDeviceType_CPU
-             ? EXPORTS_ONNXRUNTIME_ONNXRUNTIME_TYPES_DEVICE_TYPE_CPU
-             : EXPORTS_ONNXRUNTIME_ONNXRUNTIME_TYPES_DEVICE_TYPE_GPU;
+void exports_onnxruntime_onnxruntime_types_method_tensor_get_location(
+    exports_onnxruntime_onnxruntime_types_borrow_tensor_t self, exports_onnxruntime_onnxruntime_types_device_type_t* ret) {
+  *ret = {};
+  ret->tag = self->value.GetTensorMemoryInfo().GetDeviceType() == OrtMemoryInfoDeviceType_CPU
+                 ? EXPORTS_ONNXRUNTIME_ONNXRUNTIME_TYPES_DEVICE_TYPE_CPU
+                 : EXPORTS_ONNXRUNTIME_ONNXRUNTIME_TYPES_DEVICE_TYPE_GPU;
 }
 
-bool exports_onnxruntime_onnxruntime_types_method_tensor_data(exports_onnxruntime_onnxruntime_types_borrow_tensor_t self,
-                                                              onnxruntime_list_u8_t* ret, Error* err) {
+bool exports_onnxruntime_onnxruntime_types_method_tensor_get_data(
+    exports_onnxruntime_onnxruntime_types_borrow_tensor_t self, onnxruntime_list_u8_t* ret, Error* err) {
   return Try(err, [&]() {
     auto info = self->value.GetTensorTypeAndShapeInfo();
     const auto* type = FindElementType(info.GetElementType());
     if (!type || type->size == 0) {
-      throw Ort::Exception("tensor.data does not support this element type, use tensor.strings for strings",
-                           ORT_INVALID_ARGUMENT);
+      ThrowInvalidArgument("tensor.get-data does not support this element type, use tensor.get-strings for strings");
     }
     const size_t size = info.GetElementCount() * type->size;
 
@@ -422,7 +445,7 @@ bool exports_onnxruntime_onnxruntime_types_method_tensor_data(exports_onnxruntim
   });
 }
 
-bool exports_onnxruntime_onnxruntime_types_method_tensor_strings(
+bool exports_onnxruntime_onnxruntime_types_method_tensor_get_strings(
     exports_onnxruntime_onnxruntime_types_borrow_tensor_t self, onnxruntime_list_string_t* ret, Error* err) {
   return Try(err, [&]() {
     const size_t count = self->value.GetTensorTypeAndShapeInfo().GetElementCount();
@@ -463,13 +486,13 @@ bool exports_onnxruntime_onnxruntime_inference_session_static_session_create_fro
   return ok;
 }
 
-void exports_onnxruntime_onnxruntime_inference_session_method_session_input_metadata(
+void exports_onnxruntime_onnxruntime_inference_session_method_session_get_input_metadata(
     exports_onnxruntime_onnxruntime_inference_session_borrow_session_t self,
     exports_onnxruntime_onnxruntime_inference_session_list_value_metadata_t* ret) {
   ToMetadataList(self->session, /*inputs*/ true, ret);
 }
 
-void exports_onnxruntime_onnxruntime_inference_session_method_session_output_metadata(
+void exports_onnxruntime_onnxruntime_inference_session_method_session_get_output_metadata(
     exports_onnxruntime_onnxruntime_inference_session_borrow_session_t self,
     exports_onnxruntime_onnxruntime_inference_session_list_value_metadata_t* ret) {
   ToMetadataList(self->session, /*inputs*/ false, ret);
@@ -553,11 +576,11 @@ bool exports_onnxruntime_onnxruntime_inference_session_method_io_binding_bind_ou
 
 bool exports_onnxruntime_onnxruntime_inference_session_method_io_binding_bind_output_to_device(
     exports_onnxruntime_onnxruntime_inference_session_borrow_io_binding_t self, onnxruntime_string_t* name,
-    exports_onnxruntime_onnxruntime_inference_session_device_type_t device, Error* err) {
+    exports_onnxruntime_onnxruntime_inference_session_device_type_t* device, Error* err) {
   const std::string output_name = ToString(*name);
   onnxruntime_string_free(name);
-  return Try(err, [&]() {
-    if (device == EXPORTS_ONNXRUNTIME_ONNXRUNTIME_TYPES_DEVICE_TYPE_CPU) {
+  const bool ok = Try(err, [&]() {
+    if (device->tag == EXPORTS_ONNXRUNTIME_ONNXRUNTIME_TYPES_DEVICE_TYPE_CPU) {
       self->binding.BindOutput(output_name.c_str(),
                                Ort::MemoryInfo::CreateCpu(OrtDeviceAllocator, OrtMemTypeDefault));
     } else {
@@ -566,9 +589,11 @@ bool exports_onnxruntime_onnxruntime_inference_session_method_io_binding_bind_ou
                                Ort::MemoryInfo("WebGPU_Buf", OrtDeviceAllocator, 0, OrtMemTypeDefault));
     }
   });
+  exports_onnxruntime_onnxruntime_inference_session_device_type_free(device);
+  return ok;
 }
 
-bool exports_onnxruntime_onnxruntime_inference_session_method_io_binding_bound_outputs(
+bool exports_onnxruntime_onnxruntime_inference_session_method_io_binding_get_bound_outputs(
     exports_onnxruntime_onnxruntime_inference_session_borrow_io_binding_t self,
     exports_onnxruntime_onnxruntime_inference_session_list_tuple2_string_own_tensor_t* ret, Error* err) {
   return Try(err, [&]() { ToOutputList(self->binding.GetOutputNames(), self->binding.GetOutputValues(), ret); });

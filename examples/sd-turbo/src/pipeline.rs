@@ -49,11 +49,13 @@ impl Pipeline {
     pub async fn generate(&self, prompt: &str, seed: u64) -> Result<Vec<u8>, String> {
         let start = Instant::now();
         let input_ids = self.tokenizer.encode(prompt, SEQUENCE_LENGTH);
-        let input_ids = Tensor::new(
+        let input_ids = Tensor::from_data(
             TensorElementType::Int32,
-            &[1, SEQUENCE_LENGTH as i64],
-            &input_ids.iter().flat_map(|id| id.to_le_bytes()).collect::<Vec<_>>(),
-        );
+            vec![1, SEQUENCE_LENGTH as i64],
+            input_ids.iter().flat_map(|id| id.to_le_bytes()).collect(),
+        )
+        .await
+        .map_err(fmt)?;
         let mut outputs =
             self.text_encoder.run(vec![("input_ids".into(), &input_ids)], None, None).await.map_err(fmt)?;
         let (_, hidden_states) = outputs.remove(0);
@@ -63,8 +65,9 @@ impl Pipeline {
         let latents = random_normal(LATENT_SHAPE.iter().product::<i64>() as usize, seed, SIGMA);
         let divisor = (SIGMA * SIGMA + 1.0).sqrt();
         let scaled: Vec<f32> = latents.iter().map(|x| x / divisor).collect();
-        let sample = float_tensor(input_type(&self.unet, "sample"), &LATENT_SHAPE, &scaled);
-        let timestep = Tensor::new(TensorElementType::Int64, &[1], &999i64.to_le_bytes());
+        let sample = float_tensor(input_type(&self.unet, "sample").await, &LATENT_SHAPE, &scaled).await?;
+        let timestep =
+            Tensor::from_data(TensorElementType::Int64, vec![1], 999i64.to_le_bytes().to_vec()).await.map_err(fmt)?;
         let mut outputs = self
             .unet
             .run(
@@ -86,11 +89,12 @@ impl Pipeline {
             latents.iter().zip(&noise).map(|(x, n)| (x - SIGMA * n) / VAE_SCALING_FACTOR).collect();
 
         let start = Instant::now();
-        let latent_sample = float_tensor(input_type(&self.vae_decoder, "latent_sample"), &LATENT_SHAPE, &denoised);
+        let latent_sample =
+            float_tensor(input_type(&self.vae_decoder, "latent_sample").await, &LATENT_SHAPE, &denoised).await?;
         let mut outputs =
             self.vae_decoder.run(vec![("latent_sample".into(), &latent_sample)], None, None).await.map_err(fmt)?;
         let (_, image) = outputs.remove(0);
-        let dims = image.dims();
+        let dims = image.get_dims().await;
         let pixels = read_floats(&image).await?;
         let vae_decoder_ms = elapsed_ms(start);
 
@@ -124,26 +128,27 @@ async fn load(models: &Path, name: &str, dimensions: &[(&str, i64)]) -> Result<S
     Ok(session)
 }
 
-fn input_type(session: &Session, name: &str) -> TensorElementType {
+async fn input_type(session: &Session, name: &str) -> TensorElementType {
     session
-        .input_metadata()
+        .get_input_metadata()
+        .await
         .into_iter()
         .find(|input| input.name == name)
         .and_then(|input| input.element_type)
         .unwrap_or(TensorElementType::Float32)
 }
 
-fn float_tensor(element_type: TensorElementType, dims: &[i64], values: &[f32]) -> Tensor {
+async fn float_tensor(element_type: TensorElementType, dims: &[i64], values: &[f32]) -> Result<Tensor, String> {
     let bytes: Vec<u8> = match element_type {
         TensorElementType::Float16 => values.iter().flat_map(|v| f16::from_f32(*v).to_le_bytes()).collect(),
         _ => values.iter().flat_map(|v| v.to_le_bytes()).collect(),
     };
-    Tensor::new(element_type, dims, &bytes)
+    Tensor::from_data(element_type, dims.to_vec(), bytes).await.map_err(fmt)
 }
 
 async fn read_floats(tensor: &Tensor) -> Result<Vec<f32>, String> {
-    let bytes = tensor.data().await.map_err(fmt)?;
-    Ok(match tensor.element_type() {
+    let bytes = tensor.get_data().await.map_err(fmt)?;
+    Ok(match tensor.get_element_type().await {
         TensorElementType::Float16 => {
             bytes.chunks_exact(2).map(|b| f16::from_le_bytes([b[0], b[1]]).to_f32()).collect()
         }

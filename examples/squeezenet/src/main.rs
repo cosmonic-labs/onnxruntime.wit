@@ -40,15 +40,17 @@ async fn classify(model: &str, provider: &str) -> Result<(), String> {
         .await
         .map_err(|e| format!("{:?}: {}", e.code, e.message))?;
 
-    let input = &session.input_metadata()[0];
-    let output = &session.output_metadata()[0];
+    let input = &session.get_input_metadata().await[0];
+    let output = &session.get_output_metadata().await[0];
     println!("input `{}`, output `{}`", input.name, output.name);
 
     // A deterministic stand-in for an image: 1x3x224x224 floats in [0, 1).
     let dims = vec![1, 3, 224, 224];
     let pixels: Vec<f32> = (0..3 * 224 * 224).map(|i| ((i * 7919) % 255) as f32 / 255.0).collect();
     let data: Vec<u8> = pixels.iter().flat_map(|p| p.to_le_bytes()).collect();
-    let image = Tensor::new(TensorElementType::Float32, &dims, &data);
+    let image = Tensor::from_data(TensorElementType::Float32, dims, data)
+        .await
+        .map_err(|e| format!("{:?}: {}", e.code, e.message))?;
 
     let outputs = session
         .run(vec![(input.name.clone(), &image)], None, None)
@@ -56,7 +58,7 @@ async fn classify(model: &str, provider: &str) -> Result<(), String> {
         .map_err(|e| format!("{:?}: {}", e.code, e.message))?;
 
     let (_, scores) = &outputs[0];
-    let bytes = scores.data().await.map_err(|e| format!("{:?}: {}", e.code, e.message))?;
+    let bytes = scores.get_data().await.map_err(|e| format!("{:?}: {}", e.code, e.message))?;
     let scores: Vec<f32> = bytes.chunks_exact(4).map(|b| f32::from_le_bytes(b.try_into().unwrap())).collect();
 
     let mut top: Vec<usize> = (0..scores.len()).collect();
